@@ -1,0 +1,53 @@
+# Visual Studio cache/options directory
+.vs/
+
+# Build results
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+
+# User-specific files
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Visual Studio Code
+.vscode/
+
+# Build artifacts
+*.dll
+*.exe
+*.pdb
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+*.nuget.props
+*.nuget.targets
+
+# Test results
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+
+# Others
+_ReSharper*/
+*.resharper
+*.DotSettings.user
+
+# Rider
+.idea/
+
+# Generated files
+Generated\ Files/
+
+# Publish output
+publish/
+out/

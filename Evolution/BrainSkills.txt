@@ -1,0 +1,32 @@
+﻿1. Can Move North
+2. Can Move South
+3. Can Move East
+4. Can Move West.
+5. Can See
+6. Can Smell
+7. Can Feel
+8. Can Reason
+9. Can Sense Direction of Water
+10. Can Sense Direction of Food
+11. Can Sense Direction of Forest
+12. Can Sense Direction of Desert
+13. Can Sense Direction of Poison
+14. Can Eat
+15. Can Drink
+16. Movement Speed Doubled
+17. Movement Speed Halfed
+18. Can Reproduce
+19. Can Sense a Mate
+20. Can Run Away
+21. Can Fight
+22. Can Detect Direction of Enemy
+23. Can Consume Enemy
+24. Can Hide
+25. Can Defend
+26. Can Build a Nest 
+27. Can be Teritorial
+28. Can be Aggresive
+29. Can be Sneaky
+30. Can be a slow learner
+31. Can Farm
+32. Can Irrigate
