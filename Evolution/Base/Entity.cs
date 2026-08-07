@@ -431,7 +431,7 @@ namespace Evolution.Base
             // Only entities that evolved a nose for poison refuse to step in it.
             // The rest walk in and die — which is precisely the selection pressure.
             if (Brain.Has(AbilitySensePoison) &&
-                world.Poison.StaticBubbles.Any(s => next.IntersectsWith(s))) return false;
+                world.PoisonPatches.Any(s => next.IntersectsWith(s))) return false;
 
             return true;
         }

@@ -109,8 +109,8 @@ namespace Evolution
             var gfx = e.Graphics;
             gfx.Clear(Color.LightGray);
 
-            foreach (var area in new[] { world.Food, world.Water, world.Poison, world.Desert }
-                                 .Concat(world.Forests))
+            foreach (var area in new[] { world.Food, world.Water, world.Desert }
+                                 .Concat(world.Forests).Concat(world.Poisons))
                 DrawArea(gfx, area);
 
             // The commons: neutral ground where reasoning creatures and outcasts gather
@@ -306,8 +306,8 @@ namespace Evolution
                 return "Forest clearing\nTops up needs, and leaves you carrying seed\nTiles are farmed here, and pairs breed here";
             if (world.Desert.StaticBubbles.Any(s => s.Contains(at)))
                 return "Desert\nDrains thirst faster";
-            if (world.Poison.StaticBubbles.Any(s => s.Contains(at)))
-                return "Poison\nThis will kill an entity";
+            if (world.PoisonPatches.Any(s => s.Contains(at)))
+                return "Poison\nKills instantly\nOnly entities that sense it will step around";
 
             return null;
         }

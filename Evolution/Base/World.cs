@@ -80,6 +80,7 @@ namespace Evolution.Base
         private readonly List<Rectangle> naturalBounds = new List<Rectangle>();
         private readonly List<Area> plots = new List<Area>();
         private readonly List<Area> forests = new List<Area>();
+        private readonly List<Area> poisons = new List<Area>();
         private readonly List<Team> teams = new List<Team>();
         private Rectangle? commons;   // where reasoning creatures meet across team lines
 
@@ -87,11 +88,12 @@ namespace Evolution.Base
         public Rectangle Reserved { get; }
         public Area Food { get; private set; }
         public Area Water { get; private set; }
-        public Area Poison { get; private set; }
         public Area Desert { get; private set; }
 
         public IReadOnlyList<Area> Forests => forests;
+        public IReadOnlyList<Area> Poisons => poisons;
         public IEnumerable<Rectangle> Clearings => forests.SelectMany(f => f.StaticBubbles);
+        public IEnumerable<Rectangle> PoisonPatches => poisons.SelectMany(p => p.StaticBubbles);
         public IReadOnlyList<Entity> Entities => entities;
         public IEnumerable<Area> Plots => plots;
         public IReadOnlyList<Team> Teams => teams;
@@ -130,6 +132,7 @@ namespace Evolution.Base
             entities.Clear();
             plots.Clear();
             forests.Clear();
+            poisons.Clear();
             teams.Clear();
             naturalBounds.Clear();
 
@@ -145,7 +148,13 @@ namespace Evolution.Base
 
             Food = MakeArea(AreaKind.Food, 140, 200, 100, 160, wildFoodCount, 15, 20, consumable: true);
             Water = MakeArea(AreaKind.Water, 140, 200, 100, 160, wildWaterCount, 15, 20, consumable: true);
-            Poison = MakeArea(AreaKind.Poison, 120, 180, 100, 160, 8, 15, 20, consumable: false);
+
+            // One patch per half of the map. A single randomly-placed patch only ever
+            // threatened whichever team happened to spawn near it, so only that side
+            // was under any pressure to evolve a nose for the stuff.
+            poisons.Add(MakeArea(AreaKind.Poison, 110, 160, 90, 140, 4, 15, 20, false, 0, Bounds.Width / 2));
+            poisons.Add(MakeArea(AreaKind.Poison, 110, 160, 90, 140, 4, 15, 20, false,
+                                 Bounds.Width / 2, Bounds.Width));
 
             // Several stands of forest rather than one: every lineage needs a clearing
             // of its own, and the outcasts need one that nobody has claimed.
@@ -313,8 +322,9 @@ namespace Evolution.Base
         // ======================
         private void HandlePoison()
         {
+            var patches = PoisonPatches.ToList();
             foreach (var ent in entities.ToList())
-                if (Poison.StaticBubbles.Any(s => ent.Bounds.IntersectsWith(s)))
+                if (patches.Any(s => ent.Bounds.IntersectsWith(s)))
                 {
                     entities.Remove(ent);
                     PoisonDeaths++;
@@ -539,7 +549,7 @@ namespace Evolution.Base
 
                 if (!Bounds.Contains(spot)) continue;
                 if (Reserved.IntersectsWith(spot)) continue;
-                if (Poison.StaticBubbles.Any(p => p.IntersectsWith(spot))) continue;
+                if (PoisonPatches.Any(p => p.IntersectsWith(spot))) continue;
                 if (Desert.StaticBubbles.Any(d => d.IntersectsWith(spot))) continue;
                 if (plots.Any(p => p.Bounds.IntersectsWith(spot))) continue;
 
@@ -607,8 +617,9 @@ namespace Evolution.Base
             var blockers = new List<Rectangle>
             {
                 Rectangle.Inflate(Reserved, 20, 20),
-                Food.Bounds, Water.Bounds, Poison.Bounds, Desert.Bounds
+                Food.Bounds, Water.Bounds, Desert.Bounds
             };
+            blockers.AddRange(poisons.Select(p => p.Bounds));
             blockers.AddRange(plots.Select(p => p.Bounds));
 
             for (int radius = 55; radius <= 420; radius += 10)
@@ -946,9 +957,10 @@ namespace Evolution.Base
         // === AREA CREATION  ===
         // ======================
         private Area MakeArea(AreaKind kind, int minW, int maxW, int minH, int maxH,
-                              int bubbleCount, int minSize, int maxSize, bool consumable)
+                              int bubbleCount, int minSize, int maxSize, bool consumable,
+                              int xMin = 0, int xMax = int.MaxValue)
         {
-            Rectangle rect = GetRandomRect(naturalBounds, minW, maxW, minH, maxH);
+            Rectangle rect = GetRandomRect(naturalBounds, minW, maxW, minH, maxH, xMin, xMax);
             naturalBounds.Add(rect);
 
             var area = new Area { Kind = kind, Bounds = rect };
@@ -968,7 +980,10 @@ namespace Evolution.Base
         /// The legend sits in the top-left and is already in `used`, so areas may now
         /// use the full height instead of being crammed below it — which they have to,
         /// with three stands of forest to place.
-        private Rectangle GetRandomRect(List<Rectangle> used, int minW, int maxW, int minH, int maxH)
+        /// <param name="xMin">Left edge of the band the area must sit in — used to keep
+        /// one poison patch on each half of the map.</param>
+        private Rectangle GetRandomRect(List<Rectangle> used, int minW, int maxW, int minH, int maxH,
+                                        int xMin = 0, int xMax = int.MaxValue)
         {
             for (int pad = 60; pad >= 0; pad -= 10)
             {
@@ -976,7 +991,8 @@ namespace Evolution.Base
                 {
                     int w = rand.Next(minW, maxW);
                     int h = rand.Next(minH, maxH);
-                    int x = rand.Next(0, Bounds.Width - w);
+                    int right = Math.Min(xMax, Bounds.Width) - w;
+                    int x = rand.Next(xMin, Math.Max(xMin + 1, right));
                     int y = rand.Next(0, Bounds.Height - h);
                     var rect = new Rectangle(x, y, w, h);
 
