@@ -81,16 +81,19 @@ namespace Evolution
                     world.Interbreedings, world.LineagesFounded));
             }
 
-            int timeouts = results.Count(w => w.Outcome == null);
+            // A stalemate now comes back as a real outcome rather than a null, so
+            // counting only nulls silently dropped those runs from every bucket and
+            // the three totals no longer added up to the number of runs.
             int byPop = results.Count(w => w.Outcome != null && w.Outcome.Title == "Victory");
             int byWipe = results.Count(w => w.Outcome != null && w.Outcome.Title == "Game Over");
+            int timeouts = results.Count - byPop - byWipe;
             int noBirths = results.Count(w => w.Births == 0);
 
             report.AppendLine();
             report.AppendLine($"runs                : {runs}   (maxTicks {maxTicks})");
             report.AppendLine($"population victory  : {byPop}");
             report.AppendLine($"elimination         : {byWipe}");
-            report.AppendLine($"stalemate (timeout) : {timeouts}");
+            report.AppendLine($"stalemate           : {timeouts}");
             report.AppendLine($"runs with 0 births  : {noBirths}");
             report.AppendLine($"median ticks        : {Median(tickCounts)}");
             report.AppendLine($"avg births / run    : {results.Average(w => w.Births):F1}");
