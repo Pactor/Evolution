@@ -19,16 +19,29 @@ namespace Evolution
         /// The main entry point. With no arguments this shows the simulation;
         /// with --sim it runs batches headless, which is far faster for tuning.
         ///
+        ///   Evolution.exe                          watch a random world
+        ///   Evolution.exe --seed 48                watch one specific world
         ///   Evolution.exe --sim [runs] [maxTicks] [--out file]
+        ///
+        /// --seed pairs with the seed column in the --sim report, so a run worth
+        /// watching (one where a hybrid lineage takes hold, say) can be replayed.
         /// </summary>
         [STAThread]
         static void Main(string[] args)
         {
             if (args.Length > 0 && args[0] == "--sim") { RunBatch(args); return; }
 
+            int? seed = null;
+            int seedIdx = Array.IndexOf(args, "--seed");
+            if (seedIdx >= 0 && seedIdx + 1 < args.Length)
+            {
+                int parsed;
+                if (int.TryParse(args[seedIdx + 1], out parsed)) seed = parsed;
+            }
+
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new Form1());
+            Application.Run(new Form1(seed));
         }
 
         private static void RunBatch(string[] args)
@@ -45,12 +58,12 @@ namespace Evolution
             var results = new List<World>();
             var tickCounts = new List<int>();
 
-            report.AppendLine("seed  ticks  outcome                          T0  T1  births  poisoned  killed  tiles  raided  captured  1stTile  1stBirth");
-            report.AppendLine(new string('-', 126));
+            report.AppendLine("seed  ticks  outcome                          T0  T1  T2  T3  hyb  births  killed  tiles  planted  cross  lineages");
+            report.AppendLine(new string('-', 128));
 
             for (int seed = 1; seed <= runs; seed++)
             {
-                var world = new World(800, 600, new Rectangle(10, 10, 160, 160), seed);
+                var world = new World(800, 600, new Rectangle(0, 0, 800, 52), seed);
                 while (world.Outcome == null && world.TickCount < maxTicks) world.Tick();
 
                 results.Add(world);
@@ -58,25 +71,29 @@ namespace Evolution
 
                 string outcome = world.Outcome == null ? "TIMEOUT (stalemate)" : world.Outcome.Message;
                 report.AppendLine(string.Format(
-                    "{0,4}  {1,5}  {2,-32} {3,3} {4,3}  {5,6}  {6,8}  {7,6}  {8,5}  {9,6}  {10,8}  {11,7}  {12,8}",
+                    "{0,4}  {1,5}  {2,-32} {3,3} {4,3} {5,3} {6,3} {7,4}  {8,6}  {9,6}  {10,5}  {11,7}  {12,5}  {13,8}",
                     seed, world.TickCount, Truncate(outcome, 32),
                     world.Population(0), world.Population(1),
-                    world.Births, world.PoisonDeaths, world.CombatDeaths,
-                    world.TilesBuilt, world.TilesRaided, world.PlotsCaptured,
-                    world.FirstTileTick < 0 ? "-" : world.FirstTileTick.ToString(),
-                    world.FirstBirthTick < 0 ? "-" : world.FirstBirthTick.ToString()));
+                    world.Teams.Count > 2 ? world.Population(2).ToString() : "-",
+                    world.Teams.Count > 3 ? world.Population(3).ToString() : "-",
+                    world.HybridCount, world.Births, world.CombatDeaths,
+                    world.TilesBuilt, world.ClearingsPlanted,
+                    world.Interbreedings, world.LineagesFounded));
             }
 
-            int timeouts = results.Count(w => w.Outcome == null);
+            // A stalemate now comes back as a real outcome rather than a null, so
+            // counting only nulls silently dropped those runs from every bucket and
+            // the three totals no longer added up to the number of runs.
             int byPop = results.Count(w => w.Outcome != null && w.Outcome.Title == "Victory");
             int byWipe = results.Count(w => w.Outcome != null && w.Outcome.Title == "Game Over");
+            int timeouts = results.Count - byPop - byWipe;
             int noBirths = results.Count(w => w.Births == 0);
 
             report.AppendLine();
             report.AppendLine($"runs                : {runs}   (maxTicks {maxTicks})");
             report.AppendLine($"population victory  : {byPop}");
             report.AppendLine($"elimination         : {byWipe}");
-            report.AppendLine($"stalemate (timeout) : {timeouts}");
+            report.AppendLine($"stalemate           : {timeouts}");
             report.AppendLine($"runs with 0 births  : {noBirths}");
             report.AppendLine($"median ticks        : {Median(tickCounts)}");
             report.AppendLine($"avg births / run    : {results.Average(w => w.Births):F1}");
@@ -87,6 +104,14 @@ namespace Evolution
             report.AppendLine($"avg raid hits       : {results.Average(w => w.TilesRaided):F1}");
             report.AppendLine($"avg plots captured  : {results.Average(w => w.PlotsCaptured):F1}");
             report.AppendLine($"median 1st tile     : {Median(results.Where(w => w.FirstTileTick >= 0).Select(w => w.FirstTileTick).ToList())} ticks");
+            report.AppendLine();
+            report.AppendLine($"runs with a crossing: {results.Count(w => w.Interbreedings > 0)}");
+            report.AppendLine($"runs with a lineage : {results.Count(w => w.LineagesFounded > 0)}");
+            report.AppendLine($"  ... reaching 4 teams: {results.Count(w => w.Teams.Count >= 4)}");
+            report.AppendLine($"hybrid lineage wins : {results.Count(w => w.Outcome != null && w.Outcome.WinningTeam >= 2)}");
+            report.AppendLine($"avg crossings / run : {results.Average(w => w.Interbreedings):F1}");
+            report.AppendLine($"avg clearings planted: {results.Average(w => w.ClearingsPlanted):F1}");
+            report.AppendLine($"median 1st crossing : {Median(results.Where(w => w.FirstHybridTick >= 0).Select(w => w.FirstHybridTick).ToList())} ticks");
 
             report.AppendLine();
             report.AppendLine("ability share of surviving population (founder odds in brackets):");
@@ -97,11 +122,15 @@ namespace Evolution
                 { "farm",         Entity.AbilityFarm },
                 { "irrigate",     Entity.AbilityIrrigate },
                 { "breed",        Entity.AbilityReproduce },
+                { "reason",       Entity.AbilityReason },
+                { "aggressive",   Entity.AbilityAggressive },
+                { "plant",        Entity.AbilityNest },
             };
             var founderOdds = new Dictionary<string, string>
             {
                 { "sense poison", "0.50" }, { "fight", "0.50" }, { "farm", "0.40" },
-                { "irrigate", "0.40" }, { "breed", "0.80" },
+                { "irrigate", "0.40" }, { "breed", "0.80" }, { "reason", "0.40" },
+                { "aggressive", "0.30" }, { "plant", "0.35" },
             };
             foreach (var t in traits)
             {

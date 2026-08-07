@@ -18,11 +18,21 @@ namespace Evolution
         private World world;
         private Timer simTimer;
         private readonly ToolTip entityTooltip = new ToolTip();
-        private readonly Rectangle legendRect = new Rectangle(10, 10, 160, 160);
+        // A full-width band across the top. It used to be a 160x160 box in the corner,
+        // which kept every biome out of the top-left and quietly handed the right-hand
+        // team the better map — team 1 was winning 171 games to 111.
+        private readonly Rectangle legendRect = new Rectangle(0, 0, 800, 52);
         private readonly Random rand = new Random();
 
-        public Form1()
+        // When set, every reset replays the same world — handy for watching a specific
+        // run from the --sim report rather than hoping a random one does something.
+        private readonly int? fixedSeed;
+
+        public Form1() : this(null) { }
+
+        public Form1(int? seed)
         {
+            fixedSeed = seed;
             InitializeComponent();
             pictureBox1.Width = 800;
             pictureBox1.Height = 600;
@@ -43,7 +53,9 @@ namespace Evolution
 
         private void ResetWorld()
         {
-            world = new World(pictureBox1.Width, pictureBox1.Height, legendRect, rand.Next());
+            world = new World(pictureBox1.Width, pictureBox1.Height, legendRect,
+                              fixedSeed ?? rand.Next());
+            Text = fixedSeed.HasValue ? $"Evolution — seed {fixedSeed}" : "Evolution";
             pictureBox1.Invalidate();
             simTimer.Start();   // a reset after game over has to bring the sim back to life
         }
@@ -97,14 +109,22 @@ namespace Evolution
             var gfx = e.Graphics;
             gfx.Clear(Color.LightGray);
 
-            foreach (var area in new[] { world.Food, world.Water, world.Poison, world.Forest, world.Desert })
+            foreach (var area in new[] { world.Food, world.Water, world.Desert }
+                                 .Concat(world.Forests).Concat(world.Poisons))
                 DrawArea(gfx, area);
+
+            // The commons: neutral ground where reasoning creatures and outcasts gather
+            var rally = world.NeutralClearing();
+            if (rally.HasValue)
+                using (var pen = new Pen(Color.DimGray, 2)
+                                 { DashStyle = System.Drawing.Drawing2D.DashStyle.Dot })
+                    gfx.DrawEllipse(pen, Rectangle.Inflate(rally.Value, 7, 7));
 
             // Team plots: shaded rectangle plus their tiles. A plot being taken is
             // outlined in the attacker's colour, so you can watch it change hands.
             foreach (var area in world.Plots)
             {
-                var teamColor = World.ColorFor(area.OwnerTeamId ?? 0);
+                var teamColor = world.ColorFor(area.OwnerTeamId ?? 0);
                 using (var fill = new SolidBrush(Color.FromArgb(40, teamColor)))
                 using (var pen = new Pen(teamColor, 2))
                 {
@@ -114,35 +134,45 @@ namespace Evolution
 
                 if (area.CapturingTeamId.HasValue && area.CaptureProgress > 0)
                 {
-                    using (var pen = new Pen(World.ColorFor(area.CapturingTeamId.Value), 3)
+                    using (var pen = new Pen(world.ColorFor(area.CapturingTeamId.Value), 3)
                                      { DashStyle = System.Drawing.Drawing2D.DashStyle.Dash })
                         gfx.DrawRectangle(pen, Rectangle.Inflate(area.Bounds, 3, 3));
 
                     int width = (int)(area.Bounds.Width * (area.CaptureProgress / (double)World.CaptureTicks));
-                    using (var bar = new SolidBrush(World.ColorFor(area.CapturingTeamId.Value)))
+                    using (var bar = new SolidBrush(world.ColorFor(area.CapturingTeamId.Value)))
                         gfx.FillRectangle(bar, area.Bounds.X, area.Bounds.Y - 6, width, 4);
                 }
 
                 DrawArea(gfx, area);
             }
 
-            // Each team's breeding ground, ringed in its colour
-            foreach (var nest in world.Nests)
-                using (var pen = new Pen(World.ColorFor(nest.Key), 2))
-                    gfx.DrawEllipse(pen, Rectangle.Inflate(nest.Value, 4, 4));
+            // Each lineage's breeding ground, ringed in its colour
+            foreach (var team in world.Teams)
+                if (team.Nest.HasValue)
+                    using (var pen = new Pen(team.Color, 2))
+                        gfx.DrawEllipse(pen, Rectangle.Inflate(team.Nest.Value, 4, 4));
 
             DrawLegendBox(gfx, legendRect);
-
-            string score = $"Team 0: {world.Population(0)} ({world.PlotCount(0)} plots)   |   " +
-                           $"Team 1: {world.Population(1)} ({world.PlotCount(1)} plots)";
-            using (var f = new Font("Arial", 12, FontStyle.Bold))
-            {
-                var size = gfx.MeasureString(score, f);
-                gfx.DrawString(score, f, Brushes.Black, (pictureBox1.Width - size.Width) / 2, 5);
-            }
+            DrawScoreboard(gfx);
 
             foreach (var ent in world.Entities)
                 DrawEntity(gfx, ent);
+        }
+
+        private void DrawScoreboard(Graphics gfx)
+        {
+            var parts = world.Teams
+                .Select(t => $"{t.Name}: {world.Population(t.Id)} ({world.PlotCount(t.Id)}p)")
+                .ToList();
+            if (world.HybridCount > 0) parts.Add($"outcasts: {world.HybridCount}");
+
+            using (var f = new Font("Arial", 10, FontStyle.Bold))
+            {
+                string score = string.Join("   |   ", parts);
+                var size = gfx.MeasureString(score, f);
+                gfx.DrawString(score, f, Brushes.Black,
+                    Math.Max(2, (pictureBox1.Width - size.Width) / 2), 4);
+            }
         }
 
         private void DrawArea(Graphics g, Area area)
@@ -156,7 +186,7 @@ namespace Evolution
                 g.DrawEllipse(outline, b.Bounds);
 
                 if (b.OwnerTeamId.HasValue)
-                    using (var pen = new Pen(World.ColorFor(b.OwnerTeamId.Value), 2))
+                    using (var pen = new Pen(world.ColorFor(b.OwnerTeamId.Value), 2))
                         g.DrawEllipse(pen, Rectangle.Inflate(b.Bounds, -2, -2));
             }
 
@@ -171,6 +201,12 @@ namespace Evolution
         {
             using (var brush = new SolidBrush(ent.Color))
                 g.FillEllipse(brush, ent.Bounds);
+
+            // An outcast wears the blend of both parents and a white ring, so you can
+            // pick it out of a crowd of either side.
+            if (ent.IsHybrid)
+                using (var pen = new Pen(Color.White, 2))
+                    g.DrawEllipse(pen, Rectangle.Inflate(ent.Bounds, 2, 2));
 
             Pen outline;
             switch (ent.State)
@@ -191,7 +227,7 @@ namespace Evolution
                 g.DrawEllipse(pen, ent.X + 1, ent.Y + 1, ent.Size - 2, ent.Size - 2);
 
             const int barHeight = 3;
-            int filled = Math.Max(0, Math.Min(ent.Size, (int)(ent.Size * (ent.Health / 100.0))));
+            int filled = Math.Max(0, Math.Min(ent.Size, (int)(ent.Size * (ent.Health / (double)ent.MaxHealth))));
             g.FillRectangle(Brushes.Red, ent.X, ent.Y - barHeight - 1, ent.Size, barHeight);
             g.FillRectangle(Brushes.Lime, ent.X, ent.Y - barHeight - 1, filled, barHeight);
         }
@@ -200,28 +236,39 @@ namespace Evolution
         {
             g.FillRectangle(Brushes.WhiteSmoke, rect);
             g.DrawRectangle(Pens.Black, rect);
-            int y = rect.Y + 6;
-            DrawLegendItem(g, "Food", Brushes.Gold, Pens.SaddleBrown, rect.X + 6, y);
-            DrawLegendItem(g, "Water", Brushes.DeepSkyBlue, Pens.DarkBlue, rect.X + 6, y + 22);
-            DrawLegendItem(g, "Poison", Brushes.OliveDrab, Pens.DarkOliveGreen, rect.X + 6, y + 44);
-            DrawLegendItem(g, "Forest", Brushes.ForestGreen, Pens.DarkGreen, rect.X + 6, y + 66);
-            DrawLegendItem(g, "Desert", Brushes.SandyBrown, Pens.Peru, rect.X + 6, y + 88);
 
-            for (int team = 0; team <= 1; team++)
+            int x = rect.X + 8, y = rect.Y + 28;
+            x = DrawLegendItem(g, "Food", Brushes.Gold, Pens.SaddleBrown, x, y);
+            x = DrawLegendItem(g, "Water", Brushes.DeepSkyBlue, Pens.DarkBlue, x, y);
+            x = DrawLegendItem(g, "Poison", Brushes.OliveDrab, Pens.DarkOliveGreen, x, y);
+            x = DrawLegendItem(g, "Forest", Brushes.ForestGreen, Pens.DarkGreen, x, y);
+            x = DrawLegendItem(g, "Desert", Brushes.SandyBrown, Pens.Peru, x, y);
+
+            foreach (var team in world.Teams)
             {
-                int ty = y + 112 + team * 18;
-                using (var b = new SolidBrush(World.ColorFor(team)))
-                    g.FillRectangle(b, rect.X + 6, ty, 15, 12);
-                g.DrawRectangle(Pens.Black, rect.X + 6, ty, 15, 12);
-                g.DrawString($"Team {team}", SystemFonts.DefaultFont, Brushes.Black, rect.X + 26, ty - 2);
+                using (var b = new SolidBrush(team.Color))
+                    g.FillRectangle(b, x, y + 2, 14, 12);
+                g.DrawRectangle(Pens.Black, x, y + 2, 14, 12);
+                g.DrawString(team.Name, SystemFonts.DefaultFont, Brushes.Black, x + 18, y);
+                x += 18 + (int)g.MeasureString(team.Name, SystemFonts.DefaultFont).Width + 10;
+            }
+
+            if (world.HybridCount > 0)
+            {
+                g.FillEllipse(Brushes.Gainsboro, x, y + 1, 14, 14);
+                using (var pen = new Pen(Color.White, 2)) g.DrawEllipse(pen, x, y + 1, 14, 14);
+                g.DrawEllipse(Pens.Black, x, y + 1, 14, 14);
+                g.DrawString("outcast", SystemFonts.DefaultFont, Brushes.Black, x + 18, y);
             }
         }
 
-        private static void DrawLegendItem(Graphics g, string label, Brush fill, Pen outline, int x, int y)
+        /// <returns>the x to start the next item at</returns>
+        private static int DrawLegendItem(Graphics g, string label, Brush fill, Pen outline, int x, int y)
         {
-            g.FillEllipse(fill, x, y, 15, 15);
-            g.DrawEllipse(outline, x, y, 15, 15);
-            g.DrawString(label, SystemFonts.DefaultFont, Brushes.Black, x + 22, y - 2);
+            g.FillEllipse(fill, x, y + 1, 14, 14);
+            g.DrawEllipse(outline, x, y + 1, 14, 14);
+            g.DrawString(label, SystemFonts.DefaultFont, Brushes.Black, x + 18, y);
+            return x + 18 + (int)g.MeasureString(label, SystemFonts.DefaultFont).Width + 10;
         }
 
         // ======================
@@ -240,11 +287,11 @@ namespace Evolution
         {
             foreach (var ent in world.Entities)
                 if (ent.Bounds.Contains(at))
-                    return $"Entity (Team {ent.TeamId})\n" +
+                    return $"Entity ({(ent.IsHybrid ? "outcast — no lineage" : world.TeamOf(ent.TeamId).Name)})\n" +
                            $"State: {ent.State}\n" +
                            $"Hunger: {ent.Hunger}\n" +
                            $"Thirst: {ent.Thirst}\n" +
-                           $"Health: {ent.Health}\n" +
+                           $"Health: {ent.Health}/{ent.MaxHealth}\n" +
                            $"Abilities: {Describe(ent.Brain)}";
 
             foreach (var area in new[] { world.Food, world.Water }.Concat(world.Plots))
@@ -255,12 +302,12 @@ namespace Evolution
                         return $"{area.Kind} Resource\nOwner: {owner}\nRemaining: {b.Value}";
                     }
 
-            if (world.Forest.StaticBubbles.Any(s => s.Contains(at)))
-                return "Forest\nNo resource drain\nBreeding ground";
+            if (world.Clearings.Any(s => s.Contains(at)))
+                return "Forest clearing\nTops up needs, and leaves you carrying seed\nTiles are farmed here, and pairs breed here";
             if (world.Desert.StaticBubbles.Any(s => s.Contains(at)))
                 return "Desert\nDrains thirst faster";
-            if (world.Poison.StaticBubbles.Any(s => s.Contains(at)))
-                return "Poison\nThis will kill an entity";
+            if (world.PoisonPatches.Any(s => s.Contains(at)))
+                return "Poison\nKills instantly\nOnly entities that sense it will step around";
 
             return null;
         }
@@ -272,9 +319,12 @@ namespace Evolution
             {
                 switch (brain.IdAt(i))
                 {
+                    case Entity.AbilityReason: names.Add("Reason"); break;
+                    case Entity.AbilitySensePoison: names.Add("Sense poison"); break;
                     case Entity.AbilityReproduce: names.Add("Breed"); break;
                     case Entity.AbilityFight: names.Add("Fight"); break;
-                    case Entity.AbilityNest: names.Add("Nest"); break;
+                    case Entity.AbilityNest: names.Add("Plant"); break;
+                    case Entity.AbilityAggressive: names.Add("Aggressive"); break;
                     case Entity.AbilityFarm: names.Add("Farm"); break;
                     case Entity.AbilityIrrigate: names.Add("Irrigate"); break;
                 }
