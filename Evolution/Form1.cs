@@ -227,7 +227,7 @@ namespace Evolution
                 g.DrawEllipse(pen, ent.X + 1, ent.Y + 1, ent.Size - 2, ent.Size - 2);
 
             const int barHeight = 3;
-            int filled = Math.Max(0, Math.Min(ent.Size, (int)(ent.Size * (ent.Health / 100.0))));
+            int filled = Math.Max(0, Math.Min(ent.Size, (int)(ent.Size * (ent.Health / (double)ent.MaxHealth))));
             g.FillRectangle(Brushes.Red, ent.X, ent.Y - barHeight - 1, ent.Size, barHeight);
             g.FillRectangle(Brushes.Lime, ent.X, ent.Y - barHeight - 1, filled, barHeight);
         }
@@ -291,7 +291,7 @@ namespace Evolution
                            $"State: {ent.State}\n" +
                            $"Hunger: {ent.Hunger}\n" +
                            $"Thirst: {ent.Thirst}\n" +
-                           $"Health: {ent.Health}\n" +
+                           $"Health: {ent.Health}/{ent.MaxHealth}\n" +
                            $"Abilities: {Describe(ent.Brain)}";
 
             foreach (var area in new[] { world.Food, world.Water }.Concat(world.Plots))

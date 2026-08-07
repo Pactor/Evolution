@@ -362,8 +362,8 @@ namespace Evolution.Base
                     if (!a.CanStrike(b)) continue;
                     if (!Hostile(a, b)) continue;
 
-                    damage[a] = (damage.ContainsKey(a) ? damage[a] : 0) + DamageTaken(a);
-                    damage[b] = (damage.ContainsKey(b) ? damage[b] : 0) + DamageTaken(b);
+                    damage[a] = (damage.ContainsKey(a) ? damage[a] : 0) + Blow(b, a);
+                    damage[b] = (damage.ContainsKey(b) ? damage[b] : 0) + Blow(a, b);
                 }
             }
 
@@ -421,11 +421,14 @@ namespace Evolution.Base
             return null;
         }
 
-        /// Fighting on your own plot hurts less — that is what makes a plot holdable.
-        private int DamageTaken(Entity target)
+        /// What one lands on the other. The attacker's build tells, and standing on your
+        /// own plot takes the sting out of it — that is what makes a plot holdable.
+        private int Blow(Entity attacker, Entity target)
         {
-            bool home = OwnedPlots(target.TeamId).Any(a => a.Bounds.Contains(target.Bounds));
-            return home ? Math.Max(1, CombatDamage - HomeGroundDefence) : CombatDamage;
+            int damage = CombatDamage + attacker.Strength;
+            if (OwnedPlots(target.TeamId).Any(a => a.Bounds.Contains(target.Bounds)))
+                damage -= HomeGroundDefence;
+            return Math.Max(1, damage);
         }
 
         private IEnumerable<Area> OwnedPlots(int teamId) => plots.Where(a => a.OwnerTeamId == teamId);
@@ -509,7 +512,7 @@ namespace Evolution.Base
 
                 if (made)
                 {
-                    ent.BuildCooldown = BuildCooldownTicks;
+                    ent.BuildCooldown = ent.BuildInterval;
                     ent.State = EntityState.Farming;
                 }
             }
@@ -704,7 +707,8 @@ namespace Evolution.Base
             Births++;
             LineagesFounded++;
             if (FirstBirthTick < 0) FirstBirthTick = TickCount;
-            p1.Hunger = p1.Thirst = p2.Hunger = p2.Thirst = 50;
+            Recover(p1);
+            Recover(p2);
         }
 
         /// A pairing across team lines. The child belongs to neither parent's side.
@@ -728,7 +732,8 @@ namespace Evolution.Base
                     Interbreedings++;
                     if (FirstHybridTick < 0) FirstHybridTick = TickCount;
                     if (FirstBirthTick < 0) FirstBirthTick = TickCount;
-                    a.Hunger = a.Thirst = b.Hunger = b.Thirst = 50;
+                    Recover(a);
+                    Recover(b);
                     return;   // one crossing per clearing per tick
                 }
             }
@@ -753,12 +758,23 @@ namespace Evolution.Base
 
         private void SpawnChild(Entity p1, Entity p2)
         {
-            entities.Add(Entity.CreateChild(p1, p2, rand, p1.TeamId, p1.TeamColor));
+            var child = Entity.CreateChild(p1, p2, rand, p1.TeamId, p1.TeamColor);
+            if (IsZealotTeam(p1.TeamId)) child.JoinTeam(p1.TeamId, p1.TeamColor, true);
+            entities.Add(child);
+
             Births++;
             if (FirstBirthTick < 0) FirstBirthTick = TickCount;
 
             // Raising the child costs both parents, which doubles as a breeding cooldown.
-            p1.Hunger = p1.Thirst = p2.Hunger = p2.Thirst = 50;
+            Recover(p1);
+            Recover(p2);
+        }
+
+        /// What a parent is left with after raising young — hardier stock bounces back
+        /// sooner, so it is back in season while the founding teams are still foraging.
+        private static void Recover(Entity parent)
+        {
+            parent.Hunger = parent.Thirst = parent.BreedRecovery;
         }
 
         private static Color Blend(Color a, Color b) =>

@@ -11,8 +11,18 @@ namespace Evolution.Base
         public const int MaxNeed = 100;
         // Above this an entity stops hunting resources and is free to farm, fight or mate.
         public const int SatedThreshold = 80;
-        // A team founded by hybrids breeds on far less. "Stop at nothing to procreate."
+        // Hybrid vigour. A lineage founded by outcasts is simply better stock: it comes
+        // into season on less and recovers sooner, works the land faster, hits harder,
+        // carries more health, and reasons well enough to find common ground its
+        // parents' teams never could.
         public const int ZealotBreedThreshold = 55;
+        public const int ZealotBreedRecovery = 65;   // vs 50 — back in season sooner
+        public const int ZealotBuildInterval = 6;    // vs 10 ticks between tiles
+        public const int ZealotStrength = 2;         // vs 5 base damage, so 7
+        public const int ZealotMaxHealth = 130;
+
+        private const int DefaultMaxHealth = 100;
+        private const int DefaultBreedRecovery = 50;
         // Ticks between hunger/thirst each losing a point (the UI timer runs at 200ms).
         private const int DrainIntervalTicks = 20;
         private const int StarvationDamage = 1;   // per tick once a need bottoms out
@@ -81,10 +91,17 @@ namespace Evolution.Base
         // --- Needs / State / Brain ---
         public Brain Brain { get; } = new Brain();
         public Color Color => TeamColor;
-        public int Hunger { get; set; } = 50;  // 0..100
-        public int Thirst { get; set; } = 50;  // 0..100
-        public int Health { get; set; } = 100; // 0..100
+        public int Hunger { get; set; } = 50;  // 0..MaxNeed
+        public int Thirst { get; set; } = 50;  // 0..MaxNeed
+        public int Health { get; set; } = DefaultMaxHealth;
+        public int MaxHealth { get; private set; } = DefaultMaxHealth;
         public bool IsAlive => Health > 0;
+
+        // What this entity brings to a fight, a field and a nursery. Raised together
+        // when a lineage of outcasts founds itself.
+        public int Strength { get; private set; }
+        public int BuildInterval { get; private set; } = World.BuildCooldownTicks;
+        public int BreedRecovery { get; private set; } = DefaultBreedRecovery;
 
         public int LastDrainTick { get; set; } = 0;
 
@@ -167,9 +184,18 @@ namespace Evolution.Base
             if (!zealot) return;
 
             BreedThreshold = ZealotBreedThreshold;
+            BreedRecovery = ZealotBreedRecovery;
+            BuildInterval = ZealotBuildInterval;
+            Strength = ZealotStrength;
+            MaxHealth = ZealotMaxHealth;
+            Health = MaxHealth;   // the lineage comes into the world at full strength
+
             if (!Brain.Has(AbilityFight)) Brain.AddAbility(AbilityFight, 1);
             if (!Brain.Has(AbilityAggressive)) Brain.AddAbility(AbilityAggressive, 1);
             if (!Brain.Has(AbilityReproduce)) Brain.AddAbility(AbilityReproduce, 1);
+            // Reasoning better than either parent team is what lets them go on to
+            // cross with the founders and seed a lineage after their own.
+            Brain.AddAbility(AbilityReason, 2);
         }
 
         public double DistanceTo(Rectangle target)
@@ -200,7 +226,7 @@ namespace Evolution.Base
             // to eat simply wanders forever and the round never resolves.
             if (Hunger == 0 || Thirst == 0)
                 Health -= StarvationDamage;
-            else if (Hunger >= SatedThreshold && Thirst >= SatedThreshold && !InCombat && Health < 100)
+            else if (Hunger >= SatedThreshold && Thirst >= SatedThreshold && !InCombat && Health < MaxHealth)
                 Health++;
         }
 
