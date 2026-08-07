@@ -1,23 +1,25 @@
-﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace Evolution.Base
 {
+    public enum AreaKind { Food, Water, Poison, Forest, Desert, Farm, Irrigation }
+
     public class Area
     {
+        public AreaKind Kind { get; set; }
         public Rectangle Bounds { get; set; }
-        public Brush Fill { get; set; }
-        public Pen Outline { get; set; }
 
-        // Food/Water (resource pools)
+        // Set for team-claimed plots; null for the natural biomes.
+        public int? OwnerTeamId { get; set; }
+
+        // Food/Water/Farm/Irrigation (consumable pools)
         public List<ResourceBubble> Bubbles { get; set; } = new List<ResourceBubble>();
 
-        // Poison/Forest/Desert (static)
+        // Poison/Forest/Desert (fixed features)
         public List<Rectangle> StaticBubbles { get; set; } = new List<Rectangle>();
-    }
 
+        public bool IsFoodLike => Kind == AreaKind.Food || Kind == AreaKind.Farm;
+        public bool IsWaterLike => Kind == AreaKind.Water || Kind == AreaKind.Irrigation;
+    }
 }
