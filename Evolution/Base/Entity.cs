@@ -13,14 +13,17 @@ namespace Evolution.Base
         public const int SatedThreshold = 80;
         // Ticks between hunger/thirst each losing a point (the UI timer runs at 200ms).
         private const int DrainIntervalTicks = 20;
+        private const int StarvationDamage = 1;   // per tick once a need bottoms out
         private const int Step = 2;
         // Reach beyond the body. Without it two entities moving Step px per tick can
         // stride straight past each other without ever registering a hit.
         public const int AttackRange = 10;
 
-        // Odds a founder is born already knowing a trade or how to fight.
-        private const double FounderTradeChance = 0.5;
+        // Odds a founder is born already knowing a trade or how to fight. Nothing here
+        // is guaranteed: a team short of farmers has to take its tiles off someone else.
+        private const double FounderTradeChance = 0.4;
         private const double FounderFightChance = 0.5;
+        private const double FounderBreedChance = 0.8;
         // Deliberately a coin flip: entities born without a nose for poison walk into
         // it and die, so selection should push this share up over the generations.
         private const double FounderSenseChance = 0.5;
@@ -99,6 +102,7 @@ namespace Evolution.Base
                 if (rand.NextDouble() < FounderTradeChance) Brain.AddAbility(AbilityIrrigate, 1);
                 if (rand.NextDouble() < FounderFightChance) Brain.AddAbility(AbilityFight, 1);
                 if (rand.NextDouble() < FounderSenseChance) Brain.AddAbility(AbilitySensePoison, 1);
+                if (rand.NextDouble() < FounderBreedChance) Brain.AddAbility(AbilityReproduce, 1);
             }
             else
             {
@@ -134,6 +138,13 @@ namespace Evolution.Base
                     child.AddAbility(parent.IdAt(i), parent.LevelAt(i));
         }
 
+        public double DistanceTo(Rectangle target)
+        {
+            double dx = target.X + target.Width / 2.0 - CenterX;
+            double dy = target.Y + target.Height / 2.0 - CenterY;
+            return Math.Sqrt(dx * dx + dy * dy);
+        }
+
         /// Can this entity land a blow on the other? Uses reach, not body overlap.
         public bool CanStrike(Entity other)
         {
@@ -151,7 +162,11 @@ namespace Evolution.Base
                 if (Thirst > 0) Thirst--;
             }
 
-            if (Hunger >= SatedThreshold && Thirst >= SatedThreshold && !InCombat && Health < 100)
+            // Starving or parched costs health. Without this an entity with nothing left
+            // to eat simply wanders forever and the round never resolves.
+            if (Hunger == 0 || Thirst == 0)
+                Health -= StarvationDamage;
+            else if (Hunger >= SatedThreshold && Thirst >= SatedThreshold && !InCombat && Health < 100)
                 Health++;
         }
 
@@ -163,7 +178,8 @@ namespace Evolution.Base
             if (!IsAlive) return;
             if (BuildCooldown > 0) BuildCooldown--;
 
-            // === PRIORITY 1: Survival ===
+            // === PRIORITY 1: Fill up ===
+            // Everything downstream needs a full belly: tiles are built out of one.
             if (Hunger < SatedThreshold || Thirst < SatedThreshold)
             {
                 // Every pool in the world; IsEdible filters to the ones this entity may
@@ -206,46 +222,38 @@ namespace Evolution.Base
 
             }
 
-            // === PRIORITY 3: Reproduction ===
-            // Breeding outranks raiding: a fighter that only ever raids never passes
-            // the trait on, and fighting dies out of the gene pool within a few
-            // generations no matter how useful it is to the team.
-            if (ReadyToReproduce)
+            // === PRIORITY 3: Take what we can't grow ===
+            // A fighter goes for somebody else's plot either because our own larder is
+            // short — for a team that never learned to farm, the only way to get one at
+            // all — or simply because it came across theirs. Hold it long enough and it
+            // changes hands, tiles and all.
+            if (Brain.Has(AbilityFight))
             {
-                State = EntityState.SearchingMate;
-                var nest = world.GetNest(TeamId) ?? FindNearestForestBubble(world.Forest);
-                if (nest != null)
+                var plot = world.NearestEnemyPlot(this);
+                if (plot != null)
                 {
-                    MoveToward(world, nest.Value);
-                    return;
+                    bool needed = world.GetTeamFood(TeamId) < World.RaidThreshold ||
+                                  world.GetTeamWater(TeamId) < World.RaidThreshold;
+                    bool stumbledOn = DistanceTo(plot.Value) <= World.ContestRange;
+
+                    if (needed || stumbledOn)
+                    {
+                        State = EntityState.Raiding;
+                        MoveToward(world, plot.Value);
+                        return;
+                    }
                 }
             }
 
-            // === PRIORITY 4: Raid ===
-            // Only when our own stores are genuinely hurting, not merely below the cap.
-            if (Brain.Has(AbilityFight) &&
-                (world.GetTeamFood(TeamId) < World.RaidThreshold ||
-                 world.GetTeamWater(TeamId) < World.RaidThreshold))
+            // === PRIORITY 4: Carry it to the clearing ===
+            // Full and watered, so head for the forest. Both farming and breeding
+            // happen on arrival — World.HandleFarming turns a full belly into a food
+            // tile and a slaked thirst into a water tile, and pairs breed there.
+            var clearing = world.GetNest(TeamId) ?? FindNearestForestBubble(world.Forest);
+            if (clearing != null)
             {
-                var raid = world.NearestEnemyStore(this);
-                if (raid != null)
-                {
-                    State = EntityState.Raiding;
-                    MoveToward(world, raid.Value);
-                    return;
-                }
-            }
-
-            // === PRIORITY 5: Work the land ===
-            // Building itself happens in World.HandleBuilding, so this is just "stay
-            // near home" — but it must still move, or the entity stands frozen.
-            if (!Brain.Has(AbilityReproduce) &&
-                (Brain.Has(AbilityFarm) || Brain.Has(AbilityIrrigate)))
-            {
-                var home = world.GetNest(TeamId);
-                State = EntityState.Moving;
-                if (home != null) MoveToward(world, home.Value);
-                else RandomMove(world);
+                State = ReadyToReproduce ? EntityState.SearchingMate : EntityState.Moving;
+                MoveToward(world, clearing.Value);
                 return;
             }
 

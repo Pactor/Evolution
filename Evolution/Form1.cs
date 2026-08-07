@@ -100,8 +100,9 @@ namespace Evolution
             foreach (var area in new[] { world.Food, world.Water, world.Poison, world.Forest, world.Desert })
                 DrawArea(gfx, area);
 
-            // Team plots: shaded rectangle plus their bubbles
-            foreach (var area in world.FarmAreas.Concat(world.IrrigationAreas))
+            // Team plots: shaded rectangle plus their tiles. A plot being taken is
+            // outlined in the attacker's colour, so you can watch it change hands.
+            foreach (var area in world.Plots)
             {
                 var teamColor = World.ColorFor(area.OwnerTeamId ?? 0);
                 using (var fill = new SolidBrush(Color.FromArgb(40, teamColor)))
@@ -110,6 +111,18 @@ namespace Evolution
                     gfx.FillRectangle(fill, area.Bounds);
                     gfx.DrawRectangle(pen, area.Bounds);
                 }
+
+                if (area.CapturingTeamId.HasValue && area.CaptureProgress > 0)
+                {
+                    using (var pen = new Pen(World.ColorFor(area.CapturingTeamId.Value), 3)
+                                     { DashStyle = System.Drawing.Drawing2D.DashStyle.Dash })
+                        gfx.DrawRectangle(pen, Rectangle.Inflate(area.Bounds, 3, 3));
+
+                    int width = (int)(area.Bounds.Width * (area.CaptureProgress / (double)World.CaptureTicks));
+                    using (var bar = new SolidBrush(World.ColorFor(area.CapturingTeamId.Value)))
+                        gfx.FillRectangle(bar, area.Bounds.X, area.Bounds.Y - 6, width, 4);
+                }
+
                 DrawArea(gfx, area);
             }
 
@@ -120,7 +133,8 @@ namespace Evolution
 
             DrawLegendBox(gfx, legendRect);
 
-            string score = $"Team 0: {world.Population(0)}   |   Team 1: {world.Population(1)}";
+            string score = $"Team 0: {world.Population(0)} ({world.PlotCount(0)} plots)   |   " +
+                           $"Team 1: {world.Population(1)} ({world.PlotCount(1)} plots)";
             using (var f = new Font("Arial", 12, FontStyle.Bold))
             {
                 var size = gfx.MeasureString(score, f);
@@ -233,7 +247,7 @@ namespace Evolution
                            $"Health: {ent.Health}\n" +
                            $"Abilities: {Describe(ent.Brain)}";
 
-            foreach (var area in new[] { world.Food, world.Water }.Concat(world.FarmAreas).Concat(world.IrrigationAreas))
+            foreach (var area in new[] { world.Food, world.Water }.Concat(world.Plots))
                 foreach (var b in area.Bubbles)
                     if (b.Bounds.Contains(at))
                     {

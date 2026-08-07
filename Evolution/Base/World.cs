@@ -15,38 +15,51 @@ namespace Evolution.Base
     /// <summary>
     /// The entire simulation with no UI attached. Form1 renders it on a timer;
     /// Program's --sim mode runs it headless at full speed for tuning.
+    ///
+    /// The loop the whole thing is built around: eat and drink out in the world,
+    /// carry that back to a forest clearing, and turn it into a tile there — a full
+    /// belly plus the farming skill makes food, a slaked thirst plus irrigation
+    /// makes water. Tiles feed the pair that made them so they can stay and breed,
+    /// which is exactly why the other team wants them, and why they have to be held.
     /// </summary>
     public class World
     {
         // --- Tuning ---
-        public const int SurplusTarget = 1000;   // stockpile a team needs before it breeds
         public const int WinPopulation = 25;
         public const int TeamSize = 10;
+        public const int TilesPerPlot = 5;
+        public const int TileValue = 200;
+        public const int FullLarder = TilesPerPlot * TileValue;
         public const int BuildCooldownTicks = 10;
-        public const int BubblesPerPlot = 5;
-        public const int PlotBubbleValue = 200;  // 5 x 200 = exactly SurplusTarget
+        public const int FarmReach = 45;         // how near a clearing you must be to work it
         public const int CombatDamage = 5;
         public const int RaidDamage = 10;        // extra value a fighter wrecks per tick, on top of eating
-        // Stores cap at exactly SurplusTarget, so "below target" is true the moment
-        // anyone takes a bite. Raiding needs a threshold that means real hardship.
-        public const int RaidThreshold = SurplusTarget / 2;
         public const int HomeGroundDefence = 3;  // damage shrugged off inside your own plot
-        public const int AggroRange = 140;       // how far a fighter will notice an enemy
-        public const int StalemateTicks = 20000; // give up rather than run forever
+        public const int AggroRange = 140;
+        public const int CaptureTicks = 30;      // unopposed ticks needed to take a plot over
+        public const int ContestRange = 190;     // close enough to "come across" an enemy plot
+        public const int RaidThreshold = FullLarder / 2;
+        public const int StalemateTicks = 20000;
+        public const int WildTileValue = 100;    // a wild pool holds half what a farmed tile does
+        public const int WildRegrowTicks = 20;
+        public const int WildRegrowAmount = 40;
 
         public static readonly Color Team0Color = Color.FromArgb(70, 160, 255);
         public static readonly Color Team1Color = Color.FromArgb(255, 120, 120);
+
+        private const int wildFoodCount = 12;
+        private const int wildWaterCount = 10;
 
         private readonly Random rand;
         private readonly List<Entity> entities = new List<Entity>();
         private readonly List<Rectangle> naturalBounds = new List<Rectangle>();
 
-        private readonly Dictionary<int, Area> teamFarmAreas = new Dictionary<int, Area>();
-        private readonly Dictionary<int, Area> teamIrrigateAreas = new Dictionary<int, Area>();
+        // Plots change hands, so they are keyed by nothing — ownership lives on the Area.
+        private readonly List<Area> plots = new List<Area>();
         private readonly Dictionary<int, Rectangle> teamNests = new Dictionary<int, Rectangle>();
 
         public Rectangle Bounds { get; }
-        public Rectangle Reserved { get; }        // legend box — nothing may enter it
+        public Rectangle Reserved { get; }
         public Area Food { get; private set; }
         public Area Water { get; private set; }
         public Area Poison { get; private set; }
@@ -54,20 +67,22 @@ namespace Evolution.Base
         public Area Desert { get; private set; }
 
         public IReadOnlyList<Entity> Entities => entities;
-        public IEnumerable<Area> FarmAreas => teamFarmAreas.Values;
-        public IEnumerable<Area> IrrigationAreas => teamIrrigateAreas.Values;
+        public IEnumerable<Area> Plots => plots;
         public IReadOnlyDictionary<int, Rectangle> Nests => teamNests;
 
         public int TickCount { get; private set; }
         public GameOutcome Outcome { get; private set; }
 
-        // --- Stats, for the headless harness ---
+        // --- Stats for the headless harness ---
         public int Births { get; private set; }
         public int PoisonDeaths { get; private set; }
         public int CombatDeaths { get; private set; }
+        public int StarvationDeaths { get; private set; }
+        public int TilesBuilt { get; private set; }
         public int TilesRaided { get; private set; }
+        public int PlotsCaptured { get; private set; }
         public int FirstBirthTick { get; private set; } = -1;
-        public Dictionary<int, int> SurplusTick { get; } = new Dictionary<int, int>();
+        public int FirstTileTick { get; private set; } = -1;
 
         public World(int width, int height, Rectangle reserved, int seed)
         {
@@ -85,21 +100,20 @@ namespace Evolution.Base
         public void Reset()
         {
             entities.Clear();
-            teamFarmAreas.Clear();
-            teamIrrigateAreas.Clear();
+            plots.Clear();
             teamNests.Clear();
             naturalBounds.Clear();
-            SurplusTick.Clear();
 
             TickCount = 0;
             Outcome = null;
-            Births = PoisonDeaths = CombatDeaths = TilesRaided = 0;
-            FirstBirthTick = -1;
+            Births = PoisonDeaths = CombatDeaths = StarvationDeaths = 0;
+            TilesBuilt = TilesRaided = PlotsCaptured = 0;
+            FirstBirthTick = FirstTileTick = -1;
 
             naturalBounds.Add(Rectangle.Inflate(Reserved, 40, 40));
 
-            Food = MakeArea(AreaKind.Food, 140, 200, 100, 160, 12, 15, 20, consumable: true);
-            Water = MakeArea(AreaKind.Water, 140, 200, 100, 160, 10, 15, 20, consumable: true);
+            Food = MakeArea(AreaKind.Food, 140, 200, 100, 160, wildFoodCount, 15, 20, consumable: true);
+            Water = MakeArea(AreaKind.Water, 140, 200, 100, 160, wildWaterCount, 15, 20, consumable: true);
             Poison = MakeArea(AreaKind.Poison, 120, 180, 100, 160, 8, 15, 20, consumable: false);
             Forest = MakeArea(AreaKind.Forest, 160, 220, 120, 180, 10, 20, 30, consumable: false);
             Desert = MakeArea(AreaKind.Desert, 160, 220, 120, 180, 8, 20, 30, consumable: false);
@@ -120,17 +134,16 @@ namespace Evolution.Base
                 entities.Add(ent);
             }
 
-            // A team missing either trade could never reach its surplus, so guarantee one of each.
-            if (!team.Any(e => e.Brain.Has(Entity.AbilityFarm)))
-                team[rand.Next(team.Count)].Brain.AddAbility(Entity.AbilityFarm, 1);
-            if (!team.Any(e => e.Brain.Has(Entity.AbilityIrrigate)))
-                team[rand.Next(team.Count)].Brain.AddAbility(Entity.AbilityIrrigate, 1);
-            if (!team.Any(e => e.Brain.Has(Entity.AbilityFight)))
-                team[rand.Next(team.Count)].Brain.AddAbility(Entity.AbilityFight, 1);
+            // Farming and irrigation are deliberately NOT guaranteed. A team that never
+            // learns them isn't doomed — it can fight for tiles the other team built,
+            // which is a whole second way to play. Only breeding is guaranteed, since
+            // without it a team cannot win by population at all.
+            if (!team.Any(e => e.Brain.Has(Entity.AbilityReproduce)))
+                team[rand.Next(team.Count)].Brain.AddAbility(Entity.AbilityReproduce, 1);
         }
 
-        /// Each team breeds in the forest clearing nearest its spawn — and never the
-        /// same clearing as the other team, or the nursery becomes a battlefield.
+        /// Each team starts out heading for the clearing nearest its spawn — and never
+        /// the same one as the other team, or the nursery is a battlefield from tick one.
         private void AssignNests()
         {
             if (Forest.StaticBubbles.Count == 0) return;
@@ -194,17 +207,20 @@ namespace Evolution.Base
 
             foreach (var ent in entities.ToList())
                 ent.TickNeeds(TickCount);
+            StarvationDeaths += entities.RemoveAll(e => !e.IsAlive);
 
             foreach (var ent in Shuffled())
                 ent.Tick(this);
 
+            RegrowWild();
             HandlePoison();
             HandleDesert();
             HandleForestComfort();
             HandleCombat();
             ConsumeResources(FoodSources().ToList(), isFood: true);
             ConsumeResources(WaterSources().ToList(), isFood: false);
-            HandleBuilding();
+            HandleFarming();
+            HandleCapture();
             HandleReproduction();
 
             Outcome = CheckOutcome();
@@ -212,8 +228,51 @@ namespace Evolution.Base
 
         // Every pool in the world, including the other team's. Entity.IsEdible decides
         // which of them a given entity is actually willing (or able) to use.
-        public IEnumerable<Area> FoodSources() => new[] { Food }.Concat(teamFarmAreas.Values);
-        public IEnumerable<Area> WaterSources() => new[] { Water }.Concat(teamIrrigateAreas.Values);
+        public IEnumerable<Area> FoodSources() =>
+            new[] { Food }.Concat(plots.Where(p => p.Kind == AreaKind.Farm));
+
+        public IEnumerable<Area> WaterSources() =>
+            new[] { Water }.Concat(plots.Where(p => p.Kind == AreaKind.Irrigation));
+
+        // ======================
+        // === WILD REGROWTH  ===
+        // ======================
+        /// Wild food and water grow back slowly. Without this the map is a one-shot:
+        /// the biomes hold barely enough to fill everyone once, and after that nobody
+        /// can ever reach the full-bellied state that building a tile requires — you
+        /// would need water to make water. The trickle sustains a population at
+        /// subsistence; only tiles give the surplus that lets a team actually breed.
+        private void RegrowWild()
+        {
+            if (TickCount % WildRegrowTicks != 0) return;
+            Regrow(Food, wildFoodCount);
+            Regrow(Water, wildWaterCount);
+        }
+
+        private void Regrow(Area area, int originalCount)
+        {
+            var lowest = area.Bubbles.OrderBy(b => b.Value).FirstOrDefault();
+            if (lowest != null && lowest.Value < WildTileValue)
+            {
+                lowest.Value = Math.Min(WildTileValue, lowest.Value + WildRegrowAmount);
+                return;
+            }
+
+            if (area.Bubbles.Count >= originalCount) return;
+
+            int size = rand.Next(15, 20);
+            for (int attempt = 0; attempt < 40; attempt++)
+            {
+                int bx = rand.Next(area.Bounds.X, area.Bounds.Right - size);
+                int by = rand.Next(area.Bounds.Y, area.Bounds.Bottom - size);
+                var r = new Rectangle(bx, by, size, size);
+                if (!area.Bubbles.Any(b => b.Bounds.IntersectsWith(r)))
+                {
+                    area.Bubbles.Add(new ResourceBubble(r, null, WildRegrowAmount));
+                    return;
+                }
+            }
+        }
 
         // ======================
         // === HAZARDS        ===
@@ -221,13 +280,11 @@ namespace Evolution.Base
         private void HandlePoison()
         {
             foreach (var ent in entities.ToList())
-            {
                 if (Poison.StaticBubbles.Any(s => ent.Bounds.IntersectsWith(s)))
                 {
                     entities.Remove(ent);
                     PoisonDeaths++;
                 }
-            }
         }
 
         private void HandleDesert()
@@ -251,7 +308,7 @@ namespace Evolution.Base
         // ======================
         // === COMBAT         ===
         // ======================
-        // One proximity pass covers open ground, contested plots and the forest alike.
+        // One proximity pass covers open ground, contested plots and clearings alike.
         // Reach extends past the body so two entities can't stride through each other.
         private void HandleCombat()
         {
@@ -282,15 +339,14 @@ namespace Evolution.Base
             CombatDeaths += before - entities.Count;
         }
 
-        /// Fighting on your own plot hurts less — that is what makes a plot worth holding.
+        /// Fighting on your own plot hurts less — that is what makes a plot holdable.
         private int DamageTaken(Entity target)
         {
             bool home = OwnedPlots(target.TeamId).Any(a => a.Bounds.Contains(target.Bounds));
             return home ? Math.Max(1, CombatDamage - HomeGroundDefence) : CombatDamage;
         }
 
-        private IEnumerable<Area> OwnedPlots(int teamId) =>
-            teamFarmAreas.Values.Concat(teamIrrigateAreas.Values).Where(a => a.OwnerTeamId == teamId);
+        private IEnumerable<Area> OwnedPlots(int teamId) => plots.Where(a => a.OwnerTeamId == teamId);
 
         // ======================
         // === EAT / DRINK    ===
@@ -351,87 +407,96 @@ namespace Evolution.Base
         }
 
         // ======================
-        // === BUILD / FARM   ===
+        // === FARMING        ===
         // ======================
-        private void HandleBuilding()
+        /// The heart of it: an entity that carried a full belly to a clearing turns that
+        /// into a food tile, and one that arrives with its thirst slaked turns that into
+        /// water. Nothing is handed out at spawn — every tile on the map was walked there.
+        private void HandleFarming()
         {
-            // Random team order: whoever claims a plot first gets the pick closest to
-            // its nest, because later plots have to dodge the ones already standing.
-            // Always letting team 0 go first is worth a real head start.
-            var teamOrder = entities.Select(e => e.TeamId).Distinct().OrderBy(t => rand.Next()).ToList();
-
-            foreach (var teamId in teamOrder)
+            foreach (var ent in Shuffled())
             {
-                int tf = GetTeamFood(teamId);
-                int tw = GetTeamWater(teamId);
+                if (ent.BuildCooldown > 0) continue;
 
-                if (tf >= SurplusTarget && tw >= SurplusTarget && !SurplusTick.ContainsKey(teamId))
-                    SurplusTick[teamId] = TickCount;
+                var clearing = ClearingUnder(ent);
+                if (clearing == null) continue;
 
-                bool surplus = tf >= SurplusTarget && tw >= SurplusTarget;
+                bool madeSomething = false;
 
-                foreach (var ent in entities.Where(e => e.TeamId == teamId))
+                if (ent.Hunger >= Entity.SatedThreshold && ent.Brain.Has(Entity.AbilityFarm))
+                    madeSomething |= BuildTile(ent, clearing.Value, AreaKind.Farm);
+
+                if (ent.Thirst >= Entity.SatedThreshold && ent.Brain.Has(Entity.AbilityIrrigate))
+                    madeSomething |= BuildTile(ent, clearing.Value, AreaKind.Irrigation);
+
+                if (madeSomething)
                 {
-                    // The stockpile feeds the whole team, so everyone learns to breed —
-                    // not only the members who happened to be born farmers.
-                    if (surplus)
-                    {
-                        if (!ent.Brain.Has(Entity.AbilityReproduce)) ent.Brain.AddAbility(Entity.AbilityReproduce, 1);
-                        if (!ent.Brain.Has(Entity.AbilityNest)) ent.Brain.AddAbility(Entity.AbilityNest, 1);
-                        continue;
-                    }
-
-                    if (ent.BuildCooldown > 0) continue;
-
-                    if (ent.Brain.Has(Entity.AbilityFarm) && tf < SurplusTarget)
-                    {
-                        if (!teamFarmAreas.ContainsKey(teamId))
-                            teamFarmAreas[teamId] = ClaimPlot(teamId, AreaKind.Farm);
-                        AddBubbleToPlot(teamFarmAreas[teamId], teamId);
-                        ent.BuildCooldown = BuildCooldownTicks;
-                        ent.State = EntityState.Farming;
-                    }
-
-                    if (ent.Brain.Has(Entity.AbilityIrrigate) && tw < SurplusTarget)
-                    {
-                        if (!teamIrrigateAreas.ContainsKey(teamId))
-                            teamIrrigateAreas[teamId] = ClaimPlot(teamId, AreaKind.Irrigation);
-                        AddBubbleToPlot(teamIrrigateAreas[teamId], teamId);
-                        ent.BuildCooldown = BuildCooldownTicks;
-                        ent.State = EntityState.Irrigating;
-                    }
+                    ent.BuildCooldown = BuildCooldownTicks;
+                    ent.State = EntityState.Farming;
                 }
             }
         }
 
-        private Area ClaimPlot(int teamId, AreaKind kind)
+        /// The forest clearing an entity is close enough to work, if any.
+        private Rectangle? ClearingUnder(Entity ent)
         {
-            var nest = teamNests.ContainsKey(teamId)
-                ? teamNests[teamId]
-                : new Rectangle(Bounds.Width / 2, Bounds.Height / 2, 20, 20);
-
-            var area = new Area { Kind = kind, OwnerTeamId = teamId, Bounds = FindPlotNear(nest) };
-            naturalBounds.Add(area.Bounds);
-            return area;
+            foreach (var s in Forest.StaticBubbles)
+                if (ent.Bounds.IntersectsWith(Rectangle.Inflate(s, FarmReach, FarmReach)))
+                    return s;
+            return null;
         }
 
-        /// Plots hug the nest so a breeding pair can eat, drink and mate without
-        /// crossing the map. The forest itself is not an obstacle — farming at the
-        /// edge of the clearing is the whole point of learning to farm.
-        private Rectangle FindPlotNear(Rectangle nest)
+        private bool BuildTile(Entity ent, Rectangle clearing, AreaKind kind)
+        {
+            var plot = plots
+                .Where(p => p.Kind == kind && p.OwnerTeamId == ent.TeamId)
+                .OrderBy(p => Dist2(p.Bounds.X + p.Bounds.Width / 2.0,
+                                    p.Bounds.Y + p.Bounds.Height / 2.0, ent.CenterX, ent.CenterY))
+                .FirstOrDefault();
+
+            if (plot == null)
+            {
+                plot = new Area { Kind = kind, OwnerTeamId = ent.TeamId, Bounds = FindPlotNear(clearing) };
+                plots.Add(plot);
+                naturalBounds.Add(plot.Bounds);
+            }
+
+            if (plot.Bubbles.Count >= TilesPerPlot) return false;
+
+            int size = rand.Next(18, 26);
+            for (int attempt = 0; attempt < 60; attempt++)
+            {
+                int bx = rand.Next(plot.Bounds.X, plot.Bounds.Right - size);
+                int by = rand.Next(plot.Bounds.Y, plot.Bounds.Bottom - size);
+                var r = new Rectangle(bx, by, size, size);
+
+                if (!plot.Bubbles.Any(b => b.Bounds.IntersectsWith(r)))
+                {
+                    plot.Bubbles.Add(new ResourceBubble(r, owner: ent.TeamId, startValue: TileValue));
+                    TilesBuilt++;
+                    if (FirstTileTick < 0) FirstTileTick = TickCount;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// Plots hug the clearing they were worked from, so a breeding pair can eat,
+        /// drink and mate without crossing the map. The forest itself is not an
+        /// obstacle — farming at the clearing's edge is the whole point.
+        private Rectangle FindPlotNear(Rectangle clearing)
         {
             const int w = 110, h = 110;
-            double cx = nest.X + nest.Width / 2.0, cy = nest.Y + nest.Height / 2.0;
+            double cx = clearing.X + clearing.Width / 2.0, cy = clearing.Y + clearing.Height / 2.0;
 
-            var blockers = new List<Rectangle> { Rectangle.Inflate(Reserved, 20, 20) };
-            blockers.Add(Food.Bounds);
-            blockers.Add(Water.Bounds);
-            blockers.Add(Poison.Bounds);
-            blockers.Add(Desert.Bounds);
-            blockers.AddRange(teamFarmAreas.Values.Select(a => a.Bounds));
-            blockers.AddRange(teamIrrigateAreas.Values.Select(a => a.Bounds));
+            var blockers = new List<Rectangle>
+            {
+                Rectangle.Inflate(Reserved, 20, 20),
+                Food.Bounds, Water.Bounds, Poison.Bounds, Desert.Bounds
+            };
+            blockers.AddRange(plots.Select(p => p.Bounds));
 
-            for (int radius = 60; radius <= 420; radius += 10)
+            for (int radius = 55; radius <= 420; radius += 10)
             {
                 for (int attempt = 0; attempt < 60; attempt++)
                 {
@@ -446,44 +511,76 @@ namespace Evolution.Base
                 }
             }
 
-            // Nothing fits nearby: settle for anywhere legal.
             return GetRandomRect(naturalBounds, w, w + 1, h, h + 1);
         }
 
-        private void AddBubbleToPlot(Area area, int teamId)
+        // ======================
+        // === TERRITORY      ===
+        // ======================
+        /// Hold a plot unopposed for long enough and it becomes yours, tiles and all.
+        /// While both teams have somebody standing on it, nobody makes progress —
+        /// they have to win the fight first.
+        private void HandleCapture()
         {
-            if (area.Bubbles.Count >= BubblesPerPlot) return;
-
-            int size = rand.Next(18, 26);
-            for (int attempt = 0; attempt < 60; attempt++)
+            foreach (var plot in plots)
             {
-                int bx = rand.Next(area.Bounds.X, area.Bounds.Right - size);
-                int by = rand.Next(area.Bounds.Y, area.Bounds.Bottom - size);
-                var r = new Rectangle(bx, by, size, size);
+                var inside = entities.Where(e => e.Bounds.IntersectsWith(plot.Bounds)).ToList();
+                var teamsPresent = inside.Select(e => e.TeamId).Distinct().ToList();
 
-                if (!area.Bubbles.Any(b => b.Bounds.IntersectsWith(r)))
+                if (teamsPresent.Count != 1)
                 {
-                    area.Bubbles.Add(new ResourceBubble(r, owner: teamId, startValue: PlotBubbleValue));
-                    return;
+                    plot.CaptureProgress = 0;
+                    plot.CapturingTeamId = null;
+                    continue;
                 }
+
+                int claimant = teamsPresent[0];
+                if (claimant == plot.OwnerTeamId)
+                {
+                    plot.CaptureProgress = 0;
+                    plot.CapturingTeamId = null;
+                    continue;
+                }
+
+                if (plot.CapturingTeamId != claimant)
+                {
+                    plot.CapturingTeamId = claimant;
+                    plot.CaptureProgress = 0;
+                }
+
+                if (++plot.CaptureProgress < CaptureTicks) continue;
+
+                plot.OwnerTeamId = claimant;
+                foreach (var b in plot.Bubbles) b.OwnerTeamId = claimant;
+                plot.CaptureProgress = 0;
+                plot.CapturingTeamId = null;
+                PlotsCaptured++;
             }
         }
 
         // ======================
         // === REPRODUCTION   ===
         // ======================
+        /// Breeding happens in any forest clearing, not just the one a team started
+        /// beside — so a team that takes ground can raise young on it. Nobody breeds
+        /// in a clearing the enemy is standing in.
         private void HandleReproduction()
         {
-            foreach (var pair in teamNests)
+            foreach (var clearing in Forest.StaticBubbles)
             {
-                var clearing = Rectangle.Inflate(pair.Value, 6, 6);
-                var ready = entities
-                    .Where(e => e.TeamId == pair.Key && e.ReadyToReproduce && e.Bounds.IntersectsWith(clearing))
-                    .OrderBy(e => e.X)
-                    .ToList();
+                var here = Rectangle.Inflate(clearing, 6, 6);
+                var inside = entities.Where(e => e.Bounds.IntersectsWith(here)).ToList();
+                if (inside.Count < 2) continue;
 
-                for (int i = 0; i + 1 < ready.Count; i += 2)
-                    SpawnChild(ready[i], ready[i + 1]);
+                foreach (var team in inside.Select(e => e.TeamId).Distinct().ToList())
+                {
+                    if (inside.Any(e => e.TeamId != team)) continue;   // contested
+
+                    var ready = inside.Where(e => e.TeamId == team && e.ReadyToReproduce)
+                                      .OrderBy(e => e.X).ToList();
+                    for (int i = 0; i + 1 < ready.Count; i += 2)
+                        SpawnChild(ready[i], ready[i + 1]);
+                }
             }
         }
 
@@ -539,8 +636,6 @@ namespace Evolution.Base
                 };
             }
 
-            // Two survivors can circle each other forever. Call it rather than run
-            // the window until somebody closes it.
             if (TickCount >= StalemateTicks)
                 return new GameOutcome
                 {
@@ -551,24 +646,15 @@ namespace Evolution.Base
             return null;
         }
 
-        /// Share of the living population carrying an ability — how selection is going.
-        public double AbilityShare(byte id) =>
-            entities.Count == 0 ? 0 : entities.Count(e => e.Brain.Has(id)) / (double)entities.Count;
-
         // ======================
         // === QUERIES        ===
         // ======================
         public int Population(int teamId) => entities.Count(e => e.TeamId == teamId);
 
-        public Area GetTeamFarmArea(int teamId)
-        {
-            Area a; return teamFarmAreas.TryGetValue(teamId, out a) ? a : null;
-        }
+        public double AbilityShare(byte id) =>
+            entities.Count == 0 ? 0 : entities.Count(e => e.Brain.Has(id)) / (double)entities.Count;
 
-        public Area GetTeamIrrigateArea(int teamId)
-        {
-            Area a; return teamIrrigateAreas.TryGetValue(teamId, out a) ? a : null;
-        }
+        public int PlotCount(int teamId) => plots.Count(p => p.OwnerTeamId == teamId);
 
         public Rectangle? GetNest(int teamId)
         {
@@ -576,12 +662,12 @@ namespace Evolution.Base
         }
 
         public int GetTeamFood(int teamId) =>
-            Food.Bubbles.Where(b => b.OwnerTeamId == teamId).Sum(b => b.Value) +
-            (teamFarmAreas.ContainsKey(teamId) ? teamFarmAreas[teamId].Bubbles.Sum(b => b.Value) : 0);
+            plots.Where(p => p.Kind == AreaKind.Farm && p.OwnerTeamId == teamId)
+                 .Sum(p => p.Bubbles.Sum(b => b.Value));
 
         public int GetTeamWater(int teamId) =>
-            Water.Bubbles.Where(b => b.OwnerTeamId == teamId).Sum(b => b.Value) +
-            (teamIrrigateAreas.ContainsKey(teamId) ? teamIrrigateAreas[teamId].Bubbles.Sum(b => b.Value) : 0);
+            plots.Where(p => p.Kind == AreaKind.Irrigation && p.OwnerTeamId == teamId)
+                 .Sum(p => p.Bubbles.Sum(b => b.Value));
 
         public Entity NearestEnemy(Entity self, int range)
         {
@@ -619,21 +705,18 @@ namespace Evolution.Base
             return best;
         }
 
-        /// The nearest tile belonging to somebody else — the thing worth contesting.
-        public Rectangle? NearestEnemyStore(Entity self)
+        /// The nearest plot belonging to somebody else — the thing worth taking.
+        public Rectangle? NearestEnemyPlot(Entity self)
         {
             Rectangle? best = null;
             double bestDist = double.MaxValue;
 
-            foreach (var area in teamFarmAreas.Values.Concat(teamIrrigateAreas.Values))
+            foreach (var plot in plots)
             {
-                if (area.OwnerTeamId == self.TeamId) continue;
-                foreach (var b in area.Bubbles)
-                {
-                    double d = Dist2(b.Bounds.X + b.Bounds.Width / 2.0,
-                                     b.Bounds.Y + b.Bounds.Height / 2.0, self.CenterX, self.CenterY);
-                    if (d < bestDist) { best = b.Bounds; bestDist = d; }
-                }
+                if (plot.OwnerTeamId == self.TeamId) continue;
+                double d = Dist2(plot.Bounds.X + plot.Bounds.Width / 2.0,
+                                 plot.Bounds.Y + plot.Bounds.Height / 2.0, self.CenterX, self.CenterY);
+                if (d < bestDist) { best = plot.Bounds; bestDist = d; }
             }
             return best;
         }
@@ -678,7 +761,6 @@ namespace Evolution.Base
                 }
             }
 
-            // Last resort: stack toward the bottom-right, offset so they don't overlap.
             int offset = used.Count * 40;
             return new Rectangle(Math.Max(0, Bounds.Width - minW - offset),
                                  Math.Max(0, Bounds.Height - minH - offset), minW, minH);

@@ -13,6 +13,10 @@ namespace Evolution.Base
         // Set for team-claimed plots; null for the natural biomes.
         public int? OwnerTeamId { get; set; }
 
+        // Consecutive ticks the current challenger has held this plot unopposed.
+        public int CaptureProgress { get; set; }
+        public int? CapturingTeamId { get; set; }
+
         // Food/Water/Farm/Irrigation (consumable pools)
         public List<ResourceBubble> Bubbles { get; set; } = new List<ResourceBubble>();
 

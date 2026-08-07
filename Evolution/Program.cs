@@ -45,8 +45,8 @@ namespace Evolution
             var results = new List<World>();
             var tickCounts = new List<int>();
 
-            report.AppendLine($"seed  ticks  outcome                          T0  T1  births  poisoned  killed  firstBirth  surplus0  surplus1");
-            report.AppendLine(new string('-', 118));
+            report.AppendLine("seed  ticks  outcome                          T0  T1  births  poisoned  killed  tiles  raided  captured  1stTile  1stBirth");
+            report.AppendLine(new string('-', 126));
 
             for (int seed = 1; seed <= runs; seed++)
             {
@@ -58,12 +58,13 @@ namespace Evolution
 
                 string outcome = world.Outcome == null ? "TIMEOUT (stalemate)" : world.Outcome.Message;
                 report.AppendLine(string.Format(
-                    "{0,4}  {1,5}  {2,-32} {3,3} {4,3}  {5,6}  {6,8}  {7,6}  {8,10}  {9,8}  {10,8}",
+                    "{0,4}  {1,5}  {2,-32} {3,3} {4,3}  {5,6}  {6,8}  {7,6}  {8,5}  {9,6}  {10,8}  {11,7}  {12,8}",
                     seed, world.TickCount, Truncate(outcome, 32),
                     world.Population(0), world.Population(1),
                     world.Births, world.PoisonDeaths, world.CombatDeaths,
-                    world.FirstBirthTick < 0 ? "-" : world.FirstBirthTick.ToString(),
-                    Surplus(world, 0), Surplus(world, 1)));
+                    world.TilesBuilt, world.TilesRaided, world.PlotsCaptured,
+                    world.FirstTileTick < 0 ? "-" : world.FirstTileTick.ToString(),
+                    world.FirstBirthTick < 0 ? "-" : world.FirstBirthTick.ToString()));
             }
 
             int timeouts = results.Count(w => w.Outcome == null);
@@ -81,33 +82,38 @@ namespace Evolution
             report.AppendLine($"avg births / run    : {results.Average(w => w.Births):F1}");
             report.AppendLine($"avg combat deaths   : {results.Average(w => w.CombatDeaths):F1}");
             report.AppendLine($"avg poison deaths   : {results.Average(w => w.PoisonDeaths):F1}");
+            report.AppendLine($"avg starved         : {results.Average(w => w.StarvationDeaths):F1}");
+            report.AppendLine($"avg tiles built     : {results.Average(w => w.TilesBuilt):F1}");
             report.AppendLine($"avg raid hits       : {results.Average(w => w.TilesRaided):F1}");
+            report.AppendLine($"avg plots captured  : {results.Average(w => w.PlotsCaptured):F1}");
+            report.AppendLine($"median 1st tile     : {Median(results.Where(w => w.FirstTileTick >= 0).Select(w => w.FirstTileTick).ToList())} ticks");
 
-            // Founders carry each of these with probability 0.5, so a final share
-            // well above 0.50 means the trait was selected for.
             report.AppendLine();
-            report.AppendLine("ability share of surviving population (founders start at 0.50):");
+            report.AppendLine("ability share of surviving population (founder odds in brackets):");
             var traits = new Dictionary<string, byte>
             {
                 { "sense poison", Entity.AbilitySensePoison },
                 { "fight",        Entity.AbilityFight },
                 { "farm",         Entity.AbilityFarm },
                 { "irrigate",     Entity.AbilityIrrigate },
+                { "breed",        Entity.AbilityReproduce },
+            };
+            var founderOdds = new Dictionary<string, string>
+            {
+                { "sense poison", "0.50" }, { "fight", "0.50" }, { "farm", "0.40" },
+                { "irrigate", "0.40" }, { "breed", "0.80" },
             };
             foreach (var t in traits)
             {
                 var live = results.Where(w => w.Entities.Count > 0).ToList();
                 double share = live.Count == 0 ? 0 : live.Average(w => w.AbilityShare(t.Value));
-                report.AppendLine($"  {t.Key,-13}: {share:F2}");
+                report.AppendLine($"  {t.Key,-13}: {share:F2}   (founders {founderOdds[t.Key]})");
             }
 
             string text = report.ToString();
             Console.WriteLine(text);
             if (outPath != null) File.WriteAllText(outPath, text);
         }
-
-        private static string Surplus(World w, int team) =>
-            w.SurplusTick.ContainsKey(team) ? w.SurplusTick[team].ToString() : "-";
 
         private static string Truncate(string s, int n) => s.Length <= n ? s : s.Substring(0, n - 1) + "…";
 
