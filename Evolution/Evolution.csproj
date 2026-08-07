@@ -51,6 +51,7 @@
     <Compile Include="Base\Entity.cs" />
     <Compile Include="Base\EntityState.cs" />
     <Compile Include="Base\ResourceBubble.cs" />
+    <Compile Include="Base\World.cs" />
     <Compile Include="Form1.cs">
       <SubType>Form</SubType>
     </Compile>

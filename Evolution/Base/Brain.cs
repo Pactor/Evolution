@@ -4,7 +4,6 @@ using System.Drawing;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using static System.Windows.Forms.VisualStyles.VisualStyleElement.Rebar;
 
 namespace Evolution.Base
 {
@@ -12,6 +11,12 @@ namespace Evolution.Base
     {
         // [id, level, id, level, ...]
         public List<byte> Data { get; } = new List<byte>();
+
+        // Pair-wise accessors so callers (inheritance, mutation) can walk the
+        // brain without knowing about the flat byte layout.
+        public int AbilityCount => Data.Count / 2;
+        public byte IdAt(int index) => Data[index * 2];
+        public byte LevelAt(int index) => Data[index * 2 + 1];
 
         public void AddAbility(byte id, byte level)
         {
